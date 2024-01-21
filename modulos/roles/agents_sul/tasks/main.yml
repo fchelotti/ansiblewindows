@@ -1,0 +1,274 @@
+- name: Verificar se os arquivos de teste de segurança estão instalados
+  ansible.windows.win_stat:
+    path: "C:/Temp/Bastionados.zip"
+  register: arquivo_bastionados
+
+- block:
+
+  - name: Copiar o arquivo de testes de segurança se não existir
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/Bastionados.zip"
+      dest: "C:/Temp/Bastionados.zip"
+
+  - name: Verificar se os arquivos de testes de segurnaça foram extraídos
+    ansible.windows.win_stat:
+      path: "C:/Temp/Bastionados/RunScript.cmd"
+    register: arquivo_bastionados_unzip
+
+  - name: Extrair arquivo ZIP dos testes de segurança caso não tenha sido
+    community.windows.win_unzip:
+      src: "C:/Temp/Bastionados.zip"
+      dest: "C:/Temp"
+    when: not arquivo_bastionados_unzip.stat.exists
+
+  - name: Move arquivo-1 para o Temp
+    ansible.windows.win_shell:
+      "move C:\\Temp\\Bastionados\\InstallDependencyAgent-Windows.exe C:\\Temp\\"
+
+  - name: Move arquivo-2 para o Temp
+    ansible.windows.win_shell:
+      "move C:\\Temp\\Bastionados\\MDATPProxyBrasil.ps1 C:\\Temp\\"
+
+  - name: Move arquivo-3 para o Temp
+    ansible.windows.win_shell:
+      "move C:\\Temp\\Bastionados\\WDATPWorkspace.vbs C:\\Temp\\"
+
+  - name: Move arquivo-4 para o Temp
+    ansible.windows.win_shell:
+      "move C:\\Temp\\Bastionados\\WindowsDefenderATPLocalOnboardingScript.cmd C:\\Temp\\"
+
+  - name: Deleta arquivo zipado
+    ansible.windows.win_file:
+      path: C:\Temp\Bastionados.zip
+      state: absent
+    
+  when: not arquivo_bastionados.stat.exists
+
+- name: Verificar se o Nagios já está instalado
+  ansible.windows.win_shell:
+    Get-WmiObject -Class Win32_Product -Filter "Name = 'NSClient++ (x64)'"
+  register: nagios_check
+
+- block:
+
+  - name: Remover Nagios versão antiga (caso seja a instalada)
+    ansible.windows.win_shell: |
+      $AppNag = Get-WmiObject -Class Win32_Product -Filter "Name = 'NSClient++ (x64)'"
+      $AppNag.Uninstall()
+    when: nagios_check.stdout is defined and "0.5.1044" in nagios_check.stdout or
+          nagios_check.stdout is defined and "0.5.2033" in nagios_check.stdout or 
+          nagios_check.stdout is defined and "0.5.2035" in nagios_check.stdout
+
+  - name: Verificar se o arquivo de instalação do Nagios existe
+    ansible.windows.win_stat:
+      path: "C:/Temp/NSCP-0.5.2.40-x64.msi"
+    register: arquivo_nscp_existente
+
+  - name: Copiar o arquivo de instalação do Nagios se não existir
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/NSCP-0.5.2.40-x64.msi"
+      dest: "C:/Temp/NSCP-0.5.2.40-x64.msi"
+    when: not arquivo_nscp_existente.stat.exists
+
+  - name: Instalação agente Nagios se ainda não estiver instalado
+    ansible.windows.win_shell: |
+      cd C:/Temp
+      msiexec /i NSCP-0.5.2.40-x64.msi CONF_CAN_CHANGE=1 CONF_CHECKS=1 CONF_NSCLIENT=1 CONF_NRPE=1 NRPEMODE=LEGACY ALLOWED_HOSTS=10.XXX.XXX.XXX ADDLOCAL=ALL /qn /norestart
+
+  - name: Parar serviço do Nagios
+    ansible.windows.win_service:
+      name: nscp
+      state: stopped
+
+  - name: Copy nsclient.ini
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/nsclient.ini"
+      dest: "C:/Program Files/NSClient++/nsclient.ini"
+
+  - name: Iniciar serviço do Nagios
+    ansible.windows.win_service:
+      name: nscp
+      state: started
+
+  when: nagios_check.stdout is defined and "0.5.1044" in nagios_check.stdout or
+        nagios_check.stdout is defined and "0.5.2033" in nagios_check.stdout or 
+        nagios_check.stdout is defined and "0.5.2035" in nagios_check.stdout or
+        nagios_check.stdout is defined and not "NSClient++ (x64)" in nagios_check.stdout
+  
+- name: Verificar se o MMA já está instalado
+  win_shell: Get-WmiObject -Class Win32_Product | Where-Object { $_.Name -like "*Microsoft Monitoring Agent*" }
+  register: mma_check
+
+- block:
+
+  - name: Verificando se arquivo do MMA existe
+    ansible.windows.win_stat:
+      path: "C:/Temp/MMASetup-AMD64.exe"
+    register: arquivo_mma_existente
+
+  - name: Copiar o arquivo do MMA se não existir
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/MMASetup-AMD64.exe"
+      dest: "C:/Temp/MMASetup-AMD64.exe"
+    when: not arquivo_mma_existente.stat.exists
+
+  - name: Verificando ambiente para instalação do MMA
+    ansible.windows.win_stat:
+      path: "C:/Temp/setup.exe"
+    register: arquivo_mma_setup
+
+  - name: Preparando ambiente para instalação do MMA se não estiver preparado
+    ansible.windows.win_shell: 'C:\Temp\MMASetup-AMD64.exe /c /t:C:\Temp'
+    when: not arquivo_mma_setup.stat.exists
+
+  - name: Instalação do MMA se ainda não estiver instalado
+    ansible.windows.win_shell: 'C:\Temp\setup.exe /qn ADD_OPINSIGHTS_WORKSPACE=1 OPINSIGHTS_WORKSPACE_AZURE_CLOUD_TYPE=0 OPINSIGHTS_WORKSPACE_ID="c8f31420-0699-44d4-9939-12c7c26a709d" OPINSIGHTS_WORKSPACE_KEY="ToFOpulz59VltUTkLz4efJC0INNnf1tVI6hjNtXW/S4Uc8kDVu+ZxoyFGFmGgvZcjT+n6h34u3eugKeJDrpdMw==" OPINSIGHTS_PROXY_URL=10.104.244.30:8080 AcceptEndUserLicenseAgreement=1'
+
+  when: mma_check.stdout_lines | length == 0
+
+- name: Verificar se o Dependency Agent já está instalado
+  ansible.windows.win_stat:
+    path: "C:\\Program Files\\Microsoft Dependency Agent\\"
+  register: dir_check
+
+- block:
+
+  - name: Instalação do Dependency Agent
+    ansible.windows.win_shell:
+      "C:\\Temp\\InstallDependencyAgent-Windows.exe /S"
+
+  when: not dir_check.stat.exists
+
+- name: Verifica chave de registro da Telemetria
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection").TelemetryProxyServer
+  register: tele_key
+
+- block:
+
+  - name: Cria chave de registro do Proxy de Telemetria se não existir
+    ansible.windows.win_shell:
+      New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name TelemetryProxyServer -Value "10.104.244.30:8080"
+    when: tele_key == ""
+
+  - name: Define chave de registro do Proxy de Telemetria se estiver incorreta
+    ansible.windows.win_shell:
+      Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name TelemetryProxyServer -Value "10.104.244.30:8080"
+    when: tele_key != "10.104.244.30:8080"
+
+  - name: Executa onboarding
+    ansible.windows.win_shell:
+      "C:\\Temp\\WindowsDefenderATPLocalOnboardingScript.cmd"
+
+  when: tele_key.stdout == "" or tele_key.stdout != "10.104.244.30:8080"
+
+- name: Verificar se o Felexera já está instalado
+  win_shell: Get-Service | Where-Object { $_.DisplayName -like "Flexera*" }
+  register: flexera_check
+
+- block:
+
+  - name: Verificar se o arquivo de instalação do Flexera existe
+    ansible.windows.win_stat:
+      path: "C:/Temp/Flexera-Brasil.zip"
+    register: arquivo_flexera
+
+  - name: Copiar o arquivo de instalação do Flexera se não existir
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/Windows-Brasil.zip"
+      dest: "C:/Temp/Flexera-Brasil.zip"
+    when: not arquivo_flexera.stat.exists
+
+  - name: Verificar se os arquivos do Flexera foram extraídos
+    ansible.windows.win_stat:
+      path: "C:/Temp/Flexera/Windows/FlexNet Inventory Agent.msi"
+    register: arquivo_flexera_unzip
+
+  - name: Extrair arquivo ZIP do Flexera caso não tenha sido
+    community.windows.win_unzip:
+      src: "C:/Temp/Flexera-Brasil.zip"
+      dest: "C:/Temp/Flexera"
+    when: not arquivo_flexera_unzip.stat.exists
+
+  - name: Instalação do Flexera se ainda não estiver instalado
+    ansible.windows.win_shell: 'msiexec /i "C:/Temp/Flexera/Windows/FlexNet Inventory Agent.msi" /norestart /qb-'
+
+  when: flexera_check.stdout | length <= 0
+
+- name: Verifica se o ARC já está instalado
+  ansible.windows.win_shell:
+    (Get-WmiObject -Class Win32_Product | Where-Object { $_.Name -eq "Azure Connected Machine Agent"}).Name
+  register: arc_check
+
+- block:
+
+  - name: Verificar se os arquivos do ARC (Sul) estão instalados
+    ansible.windows.win_stat:
+      path: "C:/Temp/Arc-Sul/AzureArc_Brasil_windows_2.0.ps1"
+    register: arquivo_arc_Sul
+
+  - name: Copiar o arquivo do ARC (Sul) se não existir
+    ansible.windows.win_copy:
+      src: "/repo/mediafiles/windows/Arc-Sul.zip"
+      dest: "C:/Temp/Arc-Sul.zip"
+    when: not arquivo_arc_Sul.stat.exists
+
+  - name: Verificar se os arquivos do ARC (Sul) foram extraídos
+    ansible.windows.win_stat:
+      path: "C:/Temp/Arc-Sul/AzureArc_Brasil_windows_2.0.ps1"
+    register: arquivo_arc_Sul_unzip
+
+  - name: Extrair arquivo ZIP do ARC caso não tenha sido
+    community.windows.win_unzip:
+      src: "C:/Temp/Arc-Sul.zip"
+      dest: "C:/Temp/Arc-Sul"
+    when: not arquivo_arc_Sul_unzip.stat.exists
+
+  - name: Instalação do AzureConnect
+    ansible.windows.win_shell:
+      "msiexec /i C:\\Temp\\Arc-Sul\\AzureConnectedMachineAgent.msi  /norestart /qb-"
+
+  - name: Integração do servidor ao Arc
+    ansible.windows.win_shell:
+      "C:\\Temp\\Arc-Sul\\AzureArc_Brasil_windows_2.0.ps1"
+
+  - name: Inclusão do recurso Arc no MMA
+    ansible.windows.win_shell:
+      "C:\\Temp\\Arc-Sul\\Script-Agent-Sur.ps1"
+
+  - name: Deleta arquivo zipado
+    ansible.windows.win_file:
+      path: C:/Temp/Arc-Sul.zip
+      state: absent
+
+  when: arc_check.stdout == ""
+
+# - name: Verificar se o AATP Sensor já está instalado
+#   win_shell: Get-Service | Where-Object {$_.Name -like "AATPSensor*"}
+#   register: aatp_check
+
+# - block:
+
+#   - name: Verificar se o arquivo de instalação do Azure ATP Sensor existe
+#     ansible.windows.win_stat:
+#       path: "C:/Temp/AzureATPSensorSetup.exe"
+#     register: arquivo_az_existente
+
+#   - name: Copiar o arquivo de instalação do Azure ATP Sensor se não existir
+#     ansible.windows.win_copy:
+#       src: "/repo/mediafiles/windows/AzureATPSensorSetup.exe"
+#       dest: "C:/Temp/AzureATPSensorSetup.exe"
+#     when: not arquivo_az_existente.stat.exists
+
+#   - name: Copiar o arquivo de JSON do Azure ATP Sensor se não existir
+#     ansible.windows.win_copy:
+#       src: "/repo/mediafiles/windows/SensorInstallationConfiguration.json"
+#       dest: "C:/Temp/SensorInstallationConfiguration.json"
+#     when: not arquivo_az_existente.stat.exists
+
+#   - name: Instalação Azure ATP Sensor se ainda não estiver instalado
+#     ansible.windows.win_shell: |
+#       cd C:/Temp
+#       .\AzureATPsensorSetup.exe /quiet ProxyUrl="http://10.104.244.30:8080" NetFrameworkCommandLineArguments="/q" AccessKey="/GO6foVLuzrLhvcvPL8WdHdFk38Wksz4fgPmIguuCET+9YGVrvyrQBc1Z2W+fPCoq8k2wR4wtf+PnUg+nAZBIw=="
+  
+#   when: aatp_check.stdout | length <= 0

@@ -1,0 +1,9 @@
+[windows]
+
+[windows:vars]
+  ansible_user= "Administrator"
+  ansible_password= "{{ root_password }}"
+  ansible_connection= winrm
+  ansible_winrm_port= 5985
+  ansible_winrm_transport= ntlm
+  ansible_winrm_kinit_mode= managed

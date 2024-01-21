@@ -1,0 +1,83 @@
+- block:
+
+  - name: Validar Chave de registro
+    win_shell:
+      (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings").ProxyServer
+    register: ProxyServer_kinfo
+
+  - name: Definir as configurações do Wsus Sul
+    ansible.windows.win_shell: |
+      $wuServer = "http://10.105.23.70:8530"
+      $wustatusserver = "http://10.105.23.70:8530"
+      $registryPathWU = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
+      Set-ItemProperty -Path $registryPathWU -Name WUServer -Value $wuserver
+      Set-ItemProperty -Path $registryPathWU -Name WUStatusServer -Value $wustatusserver
+
+  - name: Definir as configurações do proxy Sul
+    ansible.windows.win_shell: |
+      $proxyServer = "10.104.244.30:8080"
+      $proxyBypass = "<local>;*.dus-001.com;*.brger001.corp;192.168.*;10.*"
+      $registryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+      Set-ItemProperty -Path $registryPath -Name ProxyServer -Value $proxyServer
+      Set-ItemProperty -Path $registryPath -Name ProxyEnable -Value 1
+      Set-ItemProperty -Path $registryPath -Name ProxyOverride -Value $proxyBypass
+    
+  - name: Verifica se precisa de reboot
+    ansible.windows.win_reboot:
+      reboot_timeout: 3000
+    when: ProxyServer_kinfo.stdout != '10.104.244.30:8080\r\n'
+
+  - name: Desativa variavel de controle
+    set_fact:
+      controle: false
+
+  when: controle
+
+- name: Wait for system to become reachable over WinRM
+  wait_for_connection:
+    sleep: 5
+    delay: 30
+    connect_timeout: 120
+    timeout: 900
+  register: result
+
+- name: Check for available updates
+  ansible.windows.win_updates:
+    category_names:
+      - CriticalUpdates
+      - SecurityUpdates
+      - UpdateRollups
+      - Updates
+#      - Definition Updates
+    state: searched
+  register: updates
+  retries: 3
+  delay: 3
+  ignore_errors: true
+
+- block:
+
+  - name: Install updates
+    ansible.windows.win_updates:
+      category_names:
+        - CriticalUpdates
+        - SecurityUpdates
+        - UpdateRollups
+        - Updates
+      state: installed
+      reboot_timeout: 3600
+    register: update_install
+    until: update_install is not failed
+    retries: 3
+    delay: 3
+    ignore_errors: true
+
+  - name: Verifica se precisa de reboot
+    ansible.windows.win_reboot:
+      reboot_timeout: 3000
+#    when: update_install.reboot_required
+
+  when: updates.updates | length > 0
+
+
+

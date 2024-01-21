@@ -1,0 +1,8 @@
+chg_number: "{{ number_chg }}"
+deploy_file: "{{ Deploy_FileName }}"
+site_name: "{{ Site_Name }}"
+url_validate: "{{ URL_Validate }}"
+bkp_folder: "{{ Backup_Folder }}"
+
+##novas variaveis
+domain_name: "{{ domain_name }}"

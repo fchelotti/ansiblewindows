@@ -1,0 +1,203 @@
+- name: Desabilita TcpIPv6 nas placas de rede
+  ansible.windows.win_shell:
+    Get-NetAdapterBinding -ComponentID ms_tcpip6 | ForEach-Object {Set-NetAdapterBinding -Name $_.Name -ComponentID ms_tcpip6 -Enabled $False}
+  
+- name: Desabilita TSO TcpIPv4 nas placas de rede
+  ansible.windows.win_shell:
+    Get-NetAdapterAdvancedProperty -DisplayName "IPv4 TSO Offload" | ForEach-Object {Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName "IPv4 TSO Offload" -DisplayValue "Disabled" -NoRestart}
+
+- name: Desabilita Register DNS connection nas placas de rede de gestão e backup
+  ansible.windows.win_shell: 
+    Get-DnsClient | Where-Object {$_.InterfaceAlias -like "*t1" -or $_.InterfaceAlias -like "*t2"} | ForEach-Object {Set-DnsClient -InterfaceAlias $_.InterfaceAlias -RegisterThisConnectionsAddress $False}
+
+- name: Exibir variável sem colchetes
+  set_fact:
+    dataname: "{{ nicdata | regex_replace('\\[|\\]', '') }}"
+    mgmtname: "{{ nicmgmt | regex_replace('\\[|\\]', '') }}"
+    backname: "{{ nicback | regex_replace('\\[|\\]', '') }}"
+
+- name: Renomeia as placas
+  ansible.windows.win_shell: |
+    Rename-NetAdapter -Name "Ethernet0" -NewName "DATA-{{ dataname }}"
+    Rename-NetAdapter -Name "Ethernet1" -NewName "MGMT-{{ mgmtname }}"
+    Rename-NetAdapter -Name "Ethernet2" -NewName "BACK-{{ backname }}"
+  ignore_errors: true
+
+- name: Check and Expand Disks with Free Space - powershell
+  win_shell: |
+    $disks = Get-Disk | Where-Object { $_.OperationalStatus -eq 'Online' -and $_.IsReadOnly -eq $false }
+    foreach ($disk in $disks) {
+      $partitions = Get-Partition | Where-Object { $_.DiskNumber -eq $disk.Number }
+      foreach ($partition in $partitions) {
+        $partitionSize = (Get-PartitionSupportedSize -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber).SizeMax
+        $freeSpace = $partitionSize - (Get-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber).Size
+        if ($freeSpace -gt 1000000000) { 
+          Resize-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -Size $partitionSize
+        }
+      }
+    }
+  # when: disk_info.rc == 0
+
+- name: Verificar o status atual do firewall
+  ansible.windows.win_shell: 'Get-NetFirewallProfile | Select-Object Name,Enabled'
+  register: firewall_status
+  changed_when: false
+
+- block:
+
+  - name: Desativar o firewall Domain
+    ansible.windows.win_shell: 'Set-NetFirewallProfile -Profile {{ firewall_status.stdout_lines[3].split()[0] }} -Enabled False'
+    when: firewall_status.stdout_lines[3].split()[1] == 'True'
+
+  - name: Desativar o firewall Private
+    ansible.windows.win_shell: 'Set-NetFirewallProfile -Profile {{ firewall_status.stdout_lines[4].split()[0] }} -Enabled False'
+    when: firewall_status.stdout_lines[4].split()[1] == 'True'
+
+  - name: Desativar o firewall Public
+    ansible.windows.win_shell: 'Set-NetFirewallProfile -Profile {{ firewall_status.stdout_lines[5].split()[0] }} -Enabled False'
+    when: firewall_status.stdout_lines[5].split()[1] == 'True'
+
+  when: firewall_status.stdout_lines[3].split()[1] == 'True' or
+        firewall_status.stdout_lines[4].split()[1] == 'True' or
+        firewall_status.stdout_lines[5].split()[1] == 'True'
+
+- name: Valida se Remote desktop está ativo
+  ansible.windows.win_shell: Get-ItemPropertyValue -path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections
+  register: rdp_status
+  changed_when: false
+
+- name:  Ativa o remote desktop caso não esteja ativado
+  ansible.windows.win_shell: reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+  when: rdp_status.stdout_lines is defined and "1" in rdp_status.stdout_lines
+
+- name: Verificar se o diretório C:\Temp já existe
+  ansible.windows.win_stat:
+    path: C:\Temp
+  register: dir_check
+
+- name: Criar diretório C:\Temp caso não exista
+  ansible.windows.win_file:
+    path: C:\Temp
+    state: directory
+  when: not dir_check.stat.exists
+
+- name: Busca chave de registro DontDisplayLastUserName
+  ansible.windows.win_shell:
+    Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" | Select-Object DontDisplayLastUserName
+  register: DontDisplayLastUserName
+
+- name: Define chave de registro DontDisplayLastUserName se for necessário
+  ansible.windows.win_shell:
+    Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" -Name DontDisplayLastUserName -Value 1
+  when: DontDisplayLastUserName.stdout_lines[3].split()[0] != "1"
+
+- name: Busca chave de registro ShutdownWithoutLogon
+  ansible.windows.win_shell:
+    Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" | Select-Object ShutdownWithoutLogon
+  register: ShutdownWithoutLogon
+
+- name: Define chave de registro ShutdownWithoutLogon se for necessário
+  ansible.windows.win_shell:
+    Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" -Name ShutdownWithoutLogon -Value 0
+  when: ShutdownWithoutLogon.stdout_lines[3].split()[0] != "0"
+
+- name: Busca chave de registro SubmitControl
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" | Select-Object SubmitControl).SubmitControl
+  register: SubmitControl
+
+- name: Define chave de registro SubmitControl se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" -Name SubmitControl -Value 0
+  when: SubmitControl.stdout != "0"
+
+- name: Busca chave de registro MinEncryptionLevel
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" | Select-Object MinEncryptionLevel).MinEncryptionLevel
+  register: MinEncryptionLevel
+
+- name: Define chave de registro MinEncryptionLevel se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name MinEncryptionLevel -Value 3
+  when: MinEncryptionLevel.stdout != "3"
+
+- name: Busca chave de registro App maxsize
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\Application" | Select-Object maxsize).maxsize
+  register: AppMaxsize
+
+- name: Define chave de registro App maxsize se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\Application" -Name maxsize  -Value 67108864
+  when: AppMaxsize.stdout != "67108864"
+
+- name: Busca chave de registro Sec maxsize
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\Security" | Select-Object maxsize).maxsize
+  register: SecMaxsize
+
+- name: Define chave de registro Sec maxsize se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\Security" -Name maxsize  -Value 67108864
+  when: SecMaxsize.stdout != "67108864"
+
+- name: Busca chave de registro Sys maxsize
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\System" | Select-Object maxsize).maxsize
+  register: SysMaxsize
+
+- name: Define chave de registro Sys maxsize se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\services\eventlog\System" -Name maxsize  -Value 67108864
+  when: SysMaxsize.stdout != "67108864"
+
+- name: Busca chave de registro DisableCAD
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" | Select-Object DisableCAD).DisableCAD
+  register: DisableCAD
+
+- name: Define chave de registro DisableCAD se for necessário
+  ansible.windows.win_shell:
+    Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" -Name DisableCAD -Value 0
+  when: DisableCAD.stdout != "0"
+
+- name: Busca chave de registro DisableDomainCreds
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" | Select-Object disabledomaincreds).disabledomaincreds
+  register: DisableDomainCreds
+
+- name: Definir itens Full Hardening
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" -Name DisableDomainCreds -Value 1
+  when: DisableDomainCreds.stdout != "1"
+
+- name: Busca chave de registro DisablePasswordSaving
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" | Select-Object DisablePasswordSaving).DisablePasswordSaving
+  register: DisablePasswordSaving
+
+- name: Define chave de registro DisablePasswordSaving se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name DisablePasswordSaving -Value 1
+  when: DisablePasswordSaving.stdout != "1"
+
+- name: Busca chave de registro Optional
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems" | Select-Object Optional).Optional
+  register: Optional
+
+- name: Define chave de registro Optional se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems" -Name Optional -Value "Posix"
+  when: Optional.stdout != "Posix"
+
+- name: Busca chave de registro NLA UserAuthentication
+  ansible.windows.win_shell:
+    (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' |Select-Object UserAuthentication).UserAuthentication
+  register: Nla_UserAuthentication
+
+- name: Define chave de registro NLA UserAuthentication se necessário
+  ansible.windows.win_shell: |
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -Value "0"
+  when: Nla_UserAuthentication.stdout != 0
+
